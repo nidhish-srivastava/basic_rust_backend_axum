@@ -1,13 +1,11 @@
-
-
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put, delete},
     http::StatusCode,
-    Json, Router, Extension,
+    Json, Router, Extension, extract::Path,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use mongodb::{Client, options::ClientOptions, Database};
+use mongodb::{Client, options::ClientOptions, Database, bson::{doc, oid::ObjectId}};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use axum::response::IntoResponse;
@@ -21,13 +19,15 @@ async fn main() {
     let database = client.database("my_database");
     let db = Arc::new(RwLock::new(database));
 
-    // build our application with a route
+    // Build our application with a route
     let app = Router::new()
         .route("/", get(root))
         .route("/users", post(create_user))
+        .route("/users/:id", put(update_user))
+        .route("/users/:id", delete(delete_user))
         .layer(Extension(db)); // Add the database to the application state
 
-    // run our app with hyper, listening globally on port 3000
+    // Run our app with hyper, listening globally on port 3000
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000)); // Listen on all interfaces
     println!("Listening on {}", addr);
 
@@ -38,7 +38,7 @@ async fn main() {
         .unwrap();
 }
 
-// basic handler that responds with a static string
+// Basic handler that responds with a static string
 // Handler to fetch all users from the "users" collection
 async fn root(Extension(db): Extension<Arc<RwLock<Database>>>) -> impl IntoResponse {
     let collection = db.read().await.collection::<User>("users");
@@ -63,7 +63,7 @@ async fn create_user(
     Extension(db): Extension<Arc<RwLock<Database>>>,
 ) -> impl IntoResponse {
     let user = User {
-        id: payload.id,
+        id: ObjectId::new(), // Generate a new ObjectId for the user
         username: payload.username.clone(),
     };
 
@@ -75,14 +75,67 @@ async fn create_user(
     }
 }
 
+async fn update_user(
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateUser>,
+    Extension(db): Extension<Arc<RwLock<Database>>>,
+) -> impl IntoResponse {
+    let collection = db.read().await.collection::<User>("users");
+    let object_id = match ObjectId::parse_str(&id) {
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json("Invalid ObjectId")).into_response(),
+    };
+    let filter = doc! { "_id": object_id };
+    let update = doc! { "$set": { "username": payload.username } };
+
+    match collection.update_one(filter, update, None).await {
+        Ok(update_result) => {
+            if update_result.matched_count == 1 {
+                (StatusCode::OK, Json("User updated successfully")).into_response()
+            } else {
+                (StatusCode::NOT_FOUND, Json("User not found")).into_response()
+            }
+        },
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to update user")).into_response(),
+    }
+}
+
+async fn delete_user(
+    Path(id): Path<String>,
+    Extension(db): Extension<Arc<RwLock<Database>>>,
+) -> impl IntoResponse {
+    let collection = db.read().await.collection::<User>("users");
+    let object_id = match ObjectId::parse_str(&id) {
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json("Invalid ObjectId")).into_response(),
+    };
+    let filter = doc! { "_id": object_id };
+
+    match collection.delete_one(filter, None).await {
+        Ok(delete_result) => {
+            if delete_result.deleted_count == 1 {
+                (StatusCode::OK, Json("User deleted successfully")).into_response()
+            } else {
+                (StatusCode::NOT_FOUND, Json("User not found")).into_response()
+            }
+        },
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to delete user")).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct CreateUser {
-    id: u64,
+    username: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateUser {
     username: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
-    id: u64,
+    #[serde(rename = "_id")]
+    id: ObjectId,
     username: String,
 }
