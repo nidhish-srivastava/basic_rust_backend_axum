@@ -10,11 +10,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use axum::response::IntoResponse;
 use futures::stream::StreamExt;
+use dotenv::dotenv;
+use std::env;
 
 #[tokio::main]
 async fn main() {
     // Create a MongoDB client
-    let client_options = ClientOptions::parse("mongodb+srv://Nidhish:123321@nodeexpressprojects.8ls67qd.mongodb.net/NextAuthPrisma?retryWrites=true&w=majority").await.unwrap();
+    dotenv().ok();
+    // Read the MongoDB URI from the environment variable
+    let mongo_uri = env::var("MONGO_URI").expect("MONGO_URI must be set");
+    let client_options = ClientOptions::parse(&mongo_uri).await.unwrap();
     let client = Client::with_options(client_options).unwrap();
     let database = client.database("my_database");
     let db = Arc::new(RwLock::new(database));
