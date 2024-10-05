@@ -13,6 +13,7 @@ use futures::stream::StreamExt;
 use dotenv::dotenv;
 use std::env;
 
+
 #[tokio::main]
 async fn main() {
     // Create a MongoDB client
@@ -26,10 +27,15 @@ async fn main() {
 
     // Build our application with a route
     let app = Router::new()
-        .route("/", get(root))
+        .route("/users", get(root))
         .route("/users", post(create_user))
         .route("/users/:id", put(update_user))
         .route("/users/:id", delete(delete_user))
+        .route("/posts", post(create_post))
+        .route("/posts/:id", get(get_post))
+        .route("/posts", get(get_all_posts))
+        .route("/posts/:id", put(update_post))
+        .route("/posts/:id",delete(delete_post))
         .layer(Extension(db)); // Add the database to the application state
 
     // Run our app with hyper, listening globally on port 3000
@@ -63,6 +69,120 @@ async fn root(Extension(db): Extension<Arc<RwLock<Database>>>) -> impl IntoRespo
     (StatusCode::OK, Json(users)).into_response()
 }
 
+
+// POST
+async fn create_post(
+    Json(payload): Json<CreatePost>,
+    Extension(db): Extension<Arc<RwLock<Database>>>,
+) -> impl IntoResponse {
+    let post = Post {
+        id: ObjectId::new(), // Generate a new ObjectId for the post
+        title: payload.title.clone(),
+        content: payload.content.clone(),
+        author: payload.author.clone(),
+    };
+
+    let collection = db.read().await.collection("posts");
+    let insert_result = collection.insert_one(post.clone(), None).await;
+    match insert_result {
+        Ok(_) => (StatusCode::CREATED, Json(post)).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to create post")).into_response(),
+    }
+}
+
+async fn get_post(
+    Path(id) : Path<String>,
+    Extension(db) : Extension<Arc<RwLock<Database>>>
+) -> impl IntoResponse{
+    let collection = db.read().await.collection::<Post>("posts");
+    let object_id = match ObjectId::parse_str(&id){
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST,Json("Invalid ObjectId")).into_response()
+    };
+    let filter = doc! {"_id" : object_id};
+
+    match collection.find_one(filter, None).await {
+        Ok(Some(post)) => (StatusCode::OK, Json(post)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json("Post not found")).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to fetch post")).into_response(),
+    }
+}
+
+async fn get_all_posts(
+    Extension(db) : Extension<Arc<RwLock<Database>>>
+) -> impl IntoResponse{
+    let collection = db.read().await.collection::<Post>("posts");
+    let mut cursor = collection.find(None, None).await.unwrap();
+
+    let mut posts = Vec::new();
+    while let Some(result) = cursor.next().await {
+        match result {
+            Ok(post) => posts.push(post),
+            Err(e) => {
+                eprintln!("Error fetching post: {:?}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::<Post>::new())).into_response();
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(posts)).into_response()
+}
+
+async fn update_post(
+    Path(id) : Path<String>,
+    Json(payload) : Json<UpdatePost>,
+    Extension(db): Extension<Arc<RwLock<Database>>>,
+) -> impl IntoResponse{
+    let collection = db.read().await.collection::<Post>("posts");
+    let object_id = match ObjectId::parse_str(&id) {
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST, Json("Invalid ObjectId")).into_response(),
+    };
+    let filter = doc! { "_id": object_id };
+    let update = doc! {
+        "$set": {
+            "title": payload.title,
+            "content": payload.content,
+            "author": payload.author,
+        }
+    };
+
+    match collection.update_one(filter, update, None).await {
+        Ok(update_result) => {
+            if update_result.matched_count == 1 {
+                (StatusCode::OK, Json("Post updated successfully")).into_response()
+            } else {
+                (StatusCode::NOT_FOUND, Json("Post not found")).into_response()
+            }
+        },
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to update post")).into_response(),
+    }
+}
+
+async fn delete_post(
+    Path(id) : Path<String>,
+    Extension(db) : Extension<Arc<RwLock<Database>>>
+) -> impl IntoResponse{
+    let collection = db.read().await.collection::<Post>("posts");
+    let object_id = match ObjectId::parse_str(&id){
+        Ok(oid) => oid,
+        Err(_) => return (StatusCode::BAD_REQUEST,Json("Invalid ObjectId")).into_response()
+    };
+    let filter = doc! { "_id": object_id };
+
+    match collection.delete_one(filter, None).await {
+        Ok(delete_result) => {
+            if delete_result.deleted_count == 1 {
+                (StatusCode::OK, Json("Post deleted successfully")).into_response()
+            } else {
+                (StatusCode::NOT_FOUND, Json("Post not found")).into_response()
+            }
+        },
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json("Failed to delete post")).into_response(),
+    }
+}
+
+// USER 
 async fn create_user(
     Json(payload): Json<CreateUser>,
     Extension(db): Extension<Arc<RwLock<Database>>>,
@@ -128,6 +248,29 @@ async fn delete_user(
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct Post {
+    #[serde(rename = "_id")]
+    id: ObjectId,
+    title: String,
+    content: String,
+    author: String,
+}
+
+#[derive(Deserialize)]
+struct CreatePost{
+    title : String,
+    content :String,
+    author : String
+}
+
+#[derive(Deserialize)]
+struct UpdatePost {
+    title: String,
+    content: String,
+    author: String,
+}
+
 #[derive(Deserialize)]
 struct CreateUser {
     username: String,
@@ -144,3 +287,4 @@ struct User {
     id: ObjectId,
     username: String,
 }
+
