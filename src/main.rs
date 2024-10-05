@@ -18,7 +18,7 @@ async fn main() {
     // Create a MongoDB client
     dotenv().ok();
     // Read the MongoDB URI from the environment variable
-    let mongo_uri = env::var("MONGO_URI").expect("MONGO_URI must be set");
+    let mongo_uri = env::var("MONGODB_URI").expect("MONGO_URI must be set");
     let client_options = ClientOptions::parse(&mongo_uri).await.unwrap();
     let client = Client::with_options(client_options).unwrap();
     let database = client.database("my_database");
